@@ -59,7 +59,7 @@ async function gemini(prompt, key, model) {
   return b64ToBlob(img.data, img.mimeType || img.mime_type || 'image/png');
 }
 
-/** Verkleinert auf 512×512 JPEG, damit viele Bilder auf dem Tablet Platz haben. */
+/** Verkleinert auf 512×512 JPEG und liefert eine Data-URL (ca. 30–80 kB, passt in ein Firestore-Dokument). */
 export async function shrink(blob, size = 512) {
   const bmp = await createImageBitmap(blob);
   const canvas = document.createElement('canvas');
@@ -71,9 +71,7 @@ export async function shrink(blob, size = 512) {
   const w = bmp.width * scale;
   const h = bmp.height * scale;
   ctx.drawImage(bmp, (size - w) / 2, (size - h) / 2, w, h);
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Bild konnte nicht verarbeitet werden'))), 'image/jpeg', 0.85)
-  );
+  return canvas.toDataURL('image/jpeg', 0.85);
 }
 
 export async function generateImage(word, hint, settings) {

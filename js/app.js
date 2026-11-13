@@ -1,4 +1,5 @@
-import { allWords, putWord, deleteWord, loadSettings, saveSettings } from './db.js';
+import { loadSettings, saveSettings } from './db.js';
+import { remote, initStore, saveWord, removeWord, signIn, signOut } from './store.js';
 import { generateImage, shrink, PROVIDERS } from './imagegen.js';
 import { speak, englishVoices, speechSupported, playRight, playWrong } from './speech.js';
 
@@ -8,7 +9,18 @@ const MIN_WORDS = 4;
 let settings = loadSettings();
 let words = [];
 let game = null;
-const imageUrls = new Map(); // Wort-ID -> Object-URL
+let user = null; // angemeldeter Elternteil (nur mit Server-Speicher)
+let view = 'home';
+const runtime = new Map(); // Wort-ID -> { busy, error } (nur Laufzeit, wird nicht gespeichert)
+
+// Lernstand bleibt pro Gerät, damit Kinder-Tablets nichts auf den Server schreiben müssen.
+let stats = {};
+try { stats = JSON.parse(localStorage.getItem('stats') || '{}'); } catch { /* leer starten */ }
+function bumpStat(id, key) {
+  stats[id] = { right: 0, wrong: 0, ...stats[id] };
+  stats[id][key]++;
+  localStorage.setItem('stats', JSON.stringify(stats));
+}
 
 // ---------- Hilfsfunktionen ----------
 
@@ -24,16 +36,12 @@ function shuffle(list) {
   return a;
 }
 
-function imageUrl(w) {
-  if (!w.image) return '';
-  if (!imageUrls.has(w.id)) imageUrls.set(w.id, URL.createObjectURL(w.image));
-  return imageUrls.get(w.id);
-}
+const imageUrl = (w) => w.image || '';
+const rt = (id) => runtime.get(id) || {};
+const canEdit = () => !remote || !!user;
 
-function dropImageUrl(id) {
-  const url = imageUrls.get(id);
-  if (url) URL.revokeObjectURL(url);
-  imageUrls.delete(id);
+function storeError(err) {
+  alert(`Speichern auf dem Server fehlgeschlagen: ${err.message || err}`);
 }
 
 const playable = () => words.filter((w) => w.image);
@@ -43,6 +51,7 @@ const say = (text) => speak(text, settings);
 
 function renderHome() {
   game = null;
+  view = 'home';
   const ready = playable().length >= MIN_WORDS;
   app.innerHTML = `
     <section class="home">
@@ -62,6 +71,7 @@ function renderHome() {
 function startGame() {
   const pool = playable();
   if (pool.length < MIN_WORDS) return;
+  view = 'game';
   game = { queue: shuffle(pool).slice(0, settings.roundLength), index: 0, stars: 0 };
   nextQuestion();
 }
@@ -101,8 +111,7 @@ function pick(btn) {
     playRight();
     if (game.firstTry) {
       game.stars++;
-      target.right = (target.right || 0) + 1;
-      store(target);
+      bumpStat(target.id, 'right');
     }
     setTimeout(() => {
       if (!game) return;
@@ -116,8 +125,7 @@ function pick(btn) {
     playWrong();
     if (game.firstTry) {
       game.firstTry = false;
-      target.wrong = (target.wrong || 0) + 1;
-      store(target);
+      bumpStat(target.id, 'wrong');
     }
     setTimeout(() => game && !game.locked && say(target.word), 600);
   }
@@ -126,6 +134,7 @@ function pick(btn) {
 function renderResult() {
   const { stars, queue } = game;
   game = null;
+  view = 'result';
   app.innerHTML = `
     <section class="home">
       <h1>Super! 🎉</h1>
@@ -170,6 +179,7 @@ function askParentGate() {
 
 function renderSettings() {
   game = null;
+  view = 'settings';
   const voices = englishVoices();
   app.innerHTML = `
     <section class="settings">
@@ -178,6 +188,44 @@ function renderSettings() {
         <h1>Einstellungen</h1>
       </header>
 
+      ${canEdit() ? editPanels() : loginPanel()}
+
+      <div class="panel">
+        <h2>Sprache &amp; Spiel</h2>
+        <label>Stimme
+          <select id="set-voice">
+            <option value="">Automatisch (Englisch)</option>
+            ${voices
+              .map((v) => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === settings.voiceURI ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`)
+              .join('')}
+          </select>
+        </label>
+        <label>Sprechtempo: <span id="rate-val">${settings.rate}</span>
+          <input id="set-rate" type="range" min="0.5" max="1.2" step="0.05" value="${settings.rate}">
+        </label>
+        <label>Wörter pro Runde
+          <input id="set-round" type="number" min="3" max="30" value="${settings.roundLength}">
+        </label>
+        <button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button>
+      </div>
+    </section>`;
+  renderWordList();
+}
+
+function loginPanel() {
+  return `
+      <form class="panel" id="login-form">
+        <h2>Anmeldung</h2>
+        <p class="help">Die Vokabeln liegen auf dem Server. Zum Bearbeiten bitte mit dem Eltern-Konto anmelden.</p>
+        <label>E-Mail <input id="login-email" type="email" autocomplete="username" required></label>
+        <label>Passwort <input id="login-password" type="password" autocomplete="current-password" required></label>
+        <p class="error" id="login-error"></p>
+        <button class="btn" type="submit">Anmelden</button>
+      </form>`;
+}
+
+function editPanels() {
+  return `
       <div class="panel">
         <h2>Vokabeln hinzufügen</h2>
         <p class="help">Ein englisches Wort pro Zeile (oder mit Komma getrennt). Bei mehrdeutigen Wörtern
@@ -208,27 +256,12 @@ function renderSettings() {
           <input id="set-model" value="${esc(settings.model)}" autocomplete="off" autocapitalize="off" placeholder="${esc(PROVIDERS[settings.provider].defaultModel)}">
         </label>
       </div>
-
-      <div class="panel">
-        <h2>Sprache &amp; Spiel</h2>
-        <label>Stimme
-          <select id="set-voice">
-            <option value="">Automatisch (Englisch)</option>
-            ${voices
-              .map((v) => `<option value="${esc(v.voiceURI)}" ${v.voiceURI === settings.voiceURI ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`)
-              .join('')}
-          </select>
-        </label>
-        <label>Sprechtempo: <span id="rate-val">${settings.rate}</span>
-          <input id="set-rate" type="range" min="0.5" max="1.2" step="0.05" value="${settings.rate}">
-        </label>
-        <label>Wörter pro Runde
-          <input id="set-round" type="number" min="3" max="30" value="${settings.roundLength}">
-        </label>
-        <button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button>
-      </div>
-    </section>`;
-  renderWordList();
+      ${
+        remote
+          ? `<div class="panel"><p class="help">Angemeldet als ${esc(user.email)}. Vokabeln und Bilder werden auf dem Server gespeichert und erscheinen auf allen Geräten.</p>
+             <button class="btn ghost" data-act="logout">Abmelden</button></div>`
+          : `<div class="panel"><p class="help">Es ist noch kein Server eingerichtet – Vokabeln und Bilder werden nur auf diesem Gerät gespeichert.</p></div>`
+      }`;
 }
 
 function renderWordList() {
@@ -242,17 +275,19 @@ function renderWordList() {
   list.innerHTML = [...words]
     .sort((a, b) => a.word.localeCompare(b.word))
     .map((w) => {
-      const thumb = w.busy
+      const { busy, error } = rt(w.id);
+      const st = stats[w.id] || {};
+      const thumb = busy
         ? '<div class="thumb"><span class="spinner"></span></div>'
         : w.image
           ? `<div class="thumb"><img src="${imageUrl(w)}" alt=""></div>`
           : '<div class="thumb missing">?</div>';
-      const status = w.busy
+      const status = busy
         ? 'Bild wird erzeugt …'
-        : w.error
-          ? `<span class="error">Fehler: ${esc(w.error)}</span>`
+        : error
+          ? `<span class="error">Fehler: ${esc(error)}</span>`
           : w.image
-            ? `✓ ${w.right || 0} · ✗ ${w.wrong || 0}`
+            ? `✓ ${st.right || 0} · ✗ ${st.wrong || 0}`
             : 'Noch kein Bild';
       return `
         <li data-id="${w.id}">
@@ -263,7 +298,7 @@ function renderWordList() {
           </div>
           <div class="word-actions">
             <button class="icon-btn small" data-act="say" title="Anhören">🔊</button>
-            <button class="icon-btn small" data-act="regen" title="Bild neu erzeugen" ${w.busy ? 'disabled' : ''}>🔄</button>
+            <button class="icon-btn small" data-act="regen" title="Bild neu erzeugen" ${busy ? 'disabled' : ''}>🔄</button>
             <label class="icon-btn small" title="Eigenes Bild verwenden">📷<input type="file" accept="image/*" data-act="upload" hidden></label>
             <button class="icon-btn small" data-act="delete" title="Löschen">🗑️</button>
           </div>
@@ -289,9 +324,9 @@ async function addWords() {
   for (const { word, hint } of parseNewWords(input.value)) {
     if (known.has(word.toLowerCase())) continue;
     known.add(word.toLowerCase());
-    const entry = { id: crypto.randomUUID(), word, hint, image: null, error: '', right: 0, wrong: 0 };
+    const entry = { id: crypto.randomUUID(), word, hint, image: '' };
     words.push(entry);
-    await putWord(entry);
+    saveWord(entry).catch(storeError);
     added.push(entry);
   }
   input.value = '';
@@ -301,18 +336,18 @@ async function addWords() {
 
 // Bildgenerierung: höchstens zwei Anfragen gleichzeitig.
 const queue = [];
+const deleted = new Set();
 let running = 0;
 
 function enqueue(w) {
-  if (w.busy) return;
-  w.busy = true;
-  w.error = '';
+  if (rt(w.id).busy) return;
+  runtime.set(w.id, { busy: true, error: '' });
   queue.push(w);
   renderWordList();
   pump();
 }
 
-async function pump() {
+function pump() {
   while (running < 2 && queue.length) {
     const w = queue.shift();
     running++;
@@ -325,21 +360,21 @@ async function pump() {
 
 async function generate(w) {
   try {
-    const blob = await generateImage(w.word, w.hint, settings);
-    dropImageUrl(w.id);
-    w.image = blob;
+    const image = await generateImage(w.word, w.hint, settings);
+    runtime.delete(w.id);
+    // Nicht gegen `words` prüfen: Die Liste kann gerade ein Zwischenstand vom Server sein.
+    if (!deleted.has(w.id)) setImage(w, image);
   } catch (err) {
-    w.error = err.message || String(err);
+    runtime.set(w.id, { busy: false, error: err.message || String(err) });
   }
-  w.busy = false;
-  if (words.includes(w)) await store(w);
   renderWordList();
 }
 
-// "busy" ist nur Laufzeit-Zustand und wird nicht gespeichert.
-function store(w) {
-  const { busy, ...data } = w;
-  return putWord(data);
+function setImage(w, image) {
+  const current = words.find((x) => x.id === w.id) || w;
+  current.image = image;
+  // Nicht auf die Server-Bestätigung warten (kommt offline erst später), nur Fehler melden.
+  saveWord(current).catch(storeError);
 }
 
 function readSettingsForm() {
@@ -383,9 +418,11 @@ app.addEventListener('click', async (e) => {
     case 'delete':
       if (!word || !confirm(`„${word.word}“ wirklich löschen?`)) return;
       words = words.filter((w) => w !== word);
-      dropImageUrl(word.id);
-      await deleteWord(word.id);
+      runtime.delete(word.id);
+      deleted.add(word.id);
+      removeWord(word.id).catch(storeError);
       return renderWordList();
+    case 'logout': return signOut();
   }
 });
 
@@ -396,14 +433,11 @@ app.addEventListener('change', async (e) => {
     const file = el.files[0];
     if (!word || !file) return;
     try {
-      const blob = await shrink(file);
-      dropImageUrl(word.id);
-      word.image = blob;
-      word.error = '';
+      runtime.delete(word.id);
+      setImage(word, await shrink(file));
     } catch (err) {
-      word.error = err.message || String(err);
+      runtime.set(word.id, { busy: false, error: err.message || String(err) });
     }
-    await store(word);
     return renderWordList();
   }
   if (el.id?.startsWith('set-')) readSettingsForm();
@@ -417,5 +451,34 @@ app.addEventListener('input', (e) => {
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-words = await allWords();
-renderHome();
+app.addEventListener('submit', async (e) => {
+  if (e.target.id !== 'login-form') return;
+  e.preventDefault();
+  const error = document.getElementById('login-error');
+  error.textContent = '';
+  try {
+    await signIn(document.getElementById('login-email').value.trim(), document.getElementById('login-password').value);
+  } catch {
+    error.textContent = 'Anmeldung fehlgeschlagen. Bitte E-Mail und Passwort prüfen.';
+  }
+});
+
+// Neue Daten vom Speicher (bei Server-Speicher auch Änderungen von anderen Geräten).
+function onWords(list) {
+  words = list;
+  if (view === 'home') renderHome();
+  else if (view === 'settings') renderWordList();
+}
+
+function onAuth(u) {
+  user = u;
+  if (view === 'settings') renderSettings();
+}
+
+app.innerHTML = '<section class="home"><span class="spinner"></span></section>';
+try {
+  await initStore({ onWords, onAuth });
+  if (view === 'home') renderHome();
+} catch (err) {
+  app.innerHTML = `<section class="home"><p class="notice">Die Vokabeln konnten nicht geladen werden. Bitte Internetverbindung prüfen und neu laden.<br><small>${esc(err.message || err)}</small></p></section>`;
+}

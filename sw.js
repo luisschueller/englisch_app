@@ -1,12 +1,14 @@
 // Network-first, damit Updates sofort ankommen; Cache nur als Offline-Reserve.
-const CACHE = 'englisch-app-v1';
+const CACHE = 'englisch-app-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
+  const { origin, pathname } = new URL(req.url);
+  const sdk = origin === 'https://www.gstatic.com' && pathname.startsWith('/firebasejs/');
+  if (req.method !== 'GET' || (origin !== location.origin && !sdk)) return;
   e.respondWith(
     fetch(req)
       .then((res) => {
