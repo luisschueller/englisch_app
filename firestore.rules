@@ -1,9 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Kinder und ihre Vokabellisten: ohne Anmeldung les- und änderbar.
+    // Kinder und Vokabel-Sets: ohne Anmeldung les- und änderbar.
     // Achtung: Jeder, der die Adresse der App kennt, kann damit Daten ändern oder löschen.
     match /children/{document=**} {
+      allow read, write: if true;
+    }
+    match /sets/{document=**} {
       allow read, write: if true;
     }
     // Frühere gemeinsame Liste: nur noch lesbar, um sie für ein Kind zu übernehmen.

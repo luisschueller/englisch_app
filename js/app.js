@@ -1,5 +1,7 @@
 import { loadSettings, saveSettings } from './settings.js';
-import { initStore, selectChild, saveChild, removeChild, saveWord, removeWord, legacyWords } from './store.js';
+import {
+  initStore, watchWords, saveChild, removeChild, saveSet, removeSet, saveWord, removeWord, oldChildWords, legacyWords,
+} from './store.js';
 import { generateImage, shrink, PROVIDERS } from './imagegen.js';
 import { speak, englishVoices, speechSupported, playRight, playWrong } from './speech.js';
 
@@ -7,10 +9,12 @@ const app = document.getElementById('app');
 const MIN_WORDS = 4;
 
 let settings = loadSettings();
-let words = [];
+let words = []; // Wörter der gerade beobachteten Sets (Sets des Kindes bzw. das bearbeitete Set)
 let game = null;
 let children = [];
-let child = null; // ausgewähltes Kind; jedes Kind hat seine eigene Vokabelliste
+let child = null; // ausgewähltes Kind
+let sets = []; // Vokabel-Sets der ganzen App; pro Kind wird gewählt, welche abgefragt werden
+let editSet = null; // Set, das gerade bearbeitet wird
 let view = 'children';
 const runtime = new Map(); // Wort-ID -> { busy, error } (nur Laufzeit, wird nicht gespeichert)
 
@@ -47,7 +51,16 @@ function storeError(err) {
   alert(`Speichern auf dem Server fehlgeschlagen: ${err.message || err}`);
 }
 
-const playable = () => words.filter((w) => w.image);
+// Spielbare Wörter; dasselbe Wort aus mehreren Sets zählt nur einmal.
+function playable() {
+  const seen = new Set();
+  return words.filter((w) => {
+    const key = w.word.toLowerCase();
+    if (!w.image || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 const say = (text) => speak(text, settings);
 
 // ---------- Kinderauswahl ----------
@@ -57,10 +70,12 @@ const KID_COLORS = ['#ff8a3d', '#1f9be0', '#35c46a', '#b06be0', '#f0554d', '#e0b
 function renderChildren() {
   game = null;
   child = null;
+  editSet = null;
   words = [];
   view = 'children';
   app.innerHTML = `
     <section class="home">
+      <button class="icon-btn corner" data-act="app-settings" aria-label="Einstellungen und Vokabel-Sets">⚙️</button>
       <h1>Wer spielt?</h1>
       <div class="kids">
         ${children
@@ -77,18 +92,63 @@ function renderChildren() {
     </section>`;
 }
 
+const spinner = () => (app.innerHTML = '<section class="home"><span class="spinner"></span></section>');
+
+// Beobachtet die Wörter der angegebenen Sets und zeichnet die aktuelle Ansicht bei Änderungen neu.
+async function watch(setIds) {
+  words = [];
+  try {
+    await watchWords(setIds, (list) => {
+      words = list;
+      if (view === 'home') renderHome();
+      else if (view === 'set') {
+        renderWordList();
+        renderLegacy();
+      }
+    });
+  } catch (err) {
+    showLoadError(err);
+  }
+}
+
+const childSets = () => (child.sets || []).filter((id) => sets.some((s) => s.id === id));
+
 async function chooseChild(id) {
   const c = children.find((x) => x.id === id);
   if (!c) return;
   child = c;
-  words = [];
+  spinner();
+  if (!c.sets) await migrateChild(c);
+  goHome();
+}
+
+function goHome() {
+  window.speechSynthesis?.cancel();
+  game = null;
+  editSet = null;
   view = 'home';
-  app.innerHTML = '<section class="home"><span class="spinner"></span></section>';
+  spinner();
+  return watch(childSets());
+}
+
+// Früher hatte jedes Kind eine eigene Vokabelliste. Daraus wird einmalig ein Set, das dem Kind
+// zugewiesen ist. Feste IDs, damit nichts doppelt entsteht, falls zwei Geräte gleichzeitig umstellen.
+async function migrateChild(c) {
+  let old;
   try {
-    await selectChild(c.id, (list) => onWords(c.id, list));
-  } catch (err) {
-    showLoadError(err);
+    old = await oldChildWords(c.id);
+  } catch {
+    return; // beim nächsten Mal erneut versuchen
   }
+  c.sets = [];
+  if (old.length) {
+    const set = { id: `kind-${c.id}`, name: `Vokabeln von ${c.name}`, created: c.created || Date.now() };
+    if (!sets.some((s) => s.id === set.id)) sets = [...sets, set];
+    saveSet(set).catch(storeError);
+    for (const w of old) saveWord({ ...w, set: set.id }).catch(storeError);
+    c.sets = [set.id];
+  }
+  saveChild(c).catch(storeError);
 }
 
 function askChildName() {
@@ -111,7 +171,7 @@ function askChildName() {
     const ok = dlg.returnValue === 'ok' && name;
     dlg.remove();
     if (!ok) return;
-    const c = { id: crypto.randomUUID(), name, created: Date.now() };
+    const c = { id: crypto.randomUUID(), name, created: Date.now(), sets: [] };
     children = [...children, c];
     saveChild(c).catch(storeError);
     chooseChild(c.id);
@@ -123,6 +183,7 @@ function askChildName() {
 
 function renderHome() {
   game = null;
+  editSet = null;
   view = 'home';
   const ready = playable().length >= MIN_WORDS;
   app.innerHTML = `
@@ -133,7 +194,7 @@ function renderHome() {
       ${
         ready
           ? `<button class="play-btn" data-act="play" aria-label="Spiel starten">▶</button>`
-          : `<p class="notice">Bitte zuerst in den Einstellungen (⚙️) mindestens ${MIN_WORDS} Wörter mit Bildern anlegen.</p>`
+          : `<p class="notice">Bitte in den Einstellungen (⚙️) für ${esc(child.name)} Vokabel-Sets mit zusammen mindestens ${MIN_WORDS} Wörtern mit Bild auswählen.</p>`
       }
       ${speechSupported() ? '' : '<p class="notice">Dieser Browser unterstützt leider keine Sprachausgabe.</p>'}
     </section>`;
@@ -257,18 +318,80 @@ function askParentGate(onOk) {
 
 // ---------- Einstellungen ----------
 
-function renderSettings() {
+// Einstellungen des Kindes: welche Vokabel-Sets abgefragt werden.
+function renderChildSettings() {
   game = null;
-  view = 'settings';
+  editSet = null;
+  view = 'child-settings';
+  const chosen = new Set(childSets());
+  app.innerHTML = `
+    <section class="settings">
+      <header class="settings-bar">
+        <button class="btn ghost" data-act="child-back">← Zurück</button>
+        <h1>Einstellungen – ${esc(child.name)}</h1>
+      </header>
+
+      <div class="panel">
+        <h2>Vokabel-Sets für ${esc(child.name)}</h2>
+        <p class="help">Abgefragt werden die Wörter aller angekreuzten Sets.</p>
+        ${
+          sets.length
+            ? `<ul class="word-list">${sets
+                .map(
+                  (s) => `<li><label class="check"><input type="checkbox" data-act="toggle-set" data-id="${s.id}" ${chosen.has(s.id) ? 'checked' : ''}>
+                    <span>${esc(s.name)}</span></label></li>`
+                )
+                .join('')}</ul>`
+            : '<p class="help">Es gibt noch keine Vokabel-Sets.</p>'
+        }
+        <button class="btn ghost" data-act="open-app-settings">Vokabel-Sets anlegen und bearbeiten</button>
+      </div>
+
+      <div class="panel">
+        <h2>Kind</h2>
+        <p class="help">Löscht „${esc(child.name)}“. Die Vokabel-Sets bleiben erhalten.</p>
+        <button class="btn danger" data-act="delete-child">Kind löschen</button>
+      </div>
+    </section>`;
+}
+
+// Einstellungen der ganzen App: Vokabel-Sets, Bild-KI, Sprache.
+function renderAppSettings() {
+  game = null;
+  editSet = null;
+  view = 'app-settings';
   const voices = englishVoices();
   app.innerHTML = `
     <section class="settings">
       <header class="settings-bar">
-        <button class="btn ghost" data-act="home">← Zurück</button>
-        <h1>Einstellungen – ${esc(child.name)}</h1>
+        <button class="btn ghost" data-act="app-back">← Zurück</button>
+        <h1>Einstellungen</h1>
       </header>
 
-      ${editPanels()}
+      <div class="panel">
+        <h2>Vokabel-Sets</h2>
+        <p class="help">Sets gelten für die ganze App. Welche Sets ein Kind übt, wird in den Einstellungen des Kindes gewählt.</p>
+        <ul id="set-list" class="word-list"></ul>
+        <div class="inline-form">
+          <input id="new-set" maxlength="40" placeholder="Name des neuen Sets, z. B. Tiere" autocomplete="off">
+          <button class="btn" data-act="add-set">Set anlegen</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Bild-KI</h2>
+        <label>Anbieter
+          <select id="set-provider">${Object.entries(PROVIDERS)
+            .map(([id, p]) => `<option value="${id}" ${id === settings.provider ? 'selected' : ''}>${p.label}</option>`)
+            .join('')}</select>
+        </label>
+        <label>API-Schlüssel
+          <input id="set-key" type="password" value="${esc(settings.apiKey)}" autocomplete="off" placeholder="wird nur auf diesem Gerät gespeichert">
+        </label>
+        <label>Modell (optional)
+          <input id="set-model" value="${esc(settings.model)}" autocomplete="off" autocapitalize="off" placeholder="${esc(PROVIDERS[settings.provider].defaultModel)}">
+        </label>
+      </div>
 
       <div class="panel">
         <h2>Sprache &amp; Spiel</h2>
@@ -288,19 +411,51 @@ function renderSettings() {
         </label>
         <button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button>
       </div>
-
-      <div class="panel">
-        <h2>Kind</h2>
-        <p class="help">Löscht „${esc(child.name)}“ mitsamt der Vokabelliste und allen Bildern – auf allen Geräten.</p>
-        <button class="btn danger" data-act="delete-child">Kind löschen</button>
-      </div>
     </section>`;
-  renderWordList();
-  renderLegacy();
+  renderSetList();
 }
 
-function editPanels() {
-  return `
+function renderSetList() {
+  const list = document.getElementById('set-list');
+  if (!list) return;
+  list.innerHTML = sets.length
+    ? sets
+        .map(
+          (s) => `<li data-set="${s.id}">
+            <div class="word-info"><strong>${esc(s.name)}</strong></div>
+            <div class="word-actions">
+              <button class="btn ghost" data-act="open-set">Bearbeiten</button>
+              <button class="icon-btn small" data-act="delete-set" title="Set löschen">🗑️</button>
+            </div></li>`
+        )
+        .join('')
+    : '<li class="empty">Noch keine Sets angelegt.</li>';
+}
+
+function addSet() {
+  const input = document.getElementById('new-set');
+  const name = input.value.trim();
+  if (!name) return input.focus();
+  const set = { id: crypto.randomUUID(), name, created: Date.now() };
+  sets = [...sets, set];
+  saveSet(set).catch(storeError);
+  openSet(set.id);
+}
+
+// Ein Set bearbeiten: Wörter hinzufügen, Bilder erzeugen, löschen.
+function openSet(id) {
+  const set = sets.find((s) => s.id === id);
+  if (!set) return;
+  game = null;
+  editSet = set;
+  view = 'set';
+  app.innerHTML = `
+    <section class="settings">
+      <header class="settings-bar">
+        <button class="btn ghost" data-act="set-back">← Zurück</button>
+        <h1>Set: ${esc(set.name)}</h1>
+      </header>
+
       <div class="panel">
         <h2>Vokabeln hinzufügen</h2>
         <p class="help">Ein englisches Wort pro Zeile (oder mit Komma getrennt). Bei mehrdeutigen Wörtern
@@ -311,29 +466,16 @@ function editPanels() {
 
       <div class="panel">
         <div class="panel-head">
-          <h2>Vokabeln von ${esc(child.name)} <span id="word-count" class="count"></span></h2>
+          <h2>Vokabeln in diesem Set <span id="word-count" class="count"></span></h2>
           <button class="btn ghost" data-act="gen-missing">Fehlende Bilder erzeugen</button>
         </div>
         <ul id="word-list" class="word-list"></ul>
       </div>
 
       <div id="legacy"></div>
-
-      <div class="panel">
-        <h2>Bild-KI</h2>
-        <label>Anbieter
-          <select id="set-provider">${Object.entries(PROVIDERS)
-            .map(([id, p]) => `<option value="${id}" ${id === settings.provider ? 'selected' : ''}>${p.label}</option>`)
-            .join('')}</select>
-        </label>
-        <label>API-Schlüssel
-          <input id="set-key" type="password" value="${esc(settings.apiKey)}" autocomplete="off" placeholder="wird nur auf diesem Gerät gespeichert">
-        </label>
-        <label>Modell (optional)
-          <input id="set-model" value="${esc(settings.model)}" autocomplete="off" autocapitalize="off" placeholder="${esc(PROVIDERS[settings.provider].defaultModel)}">
-        </label>
-      </div>
-`;
+    </section>`;
+  renderWordList();
+  watch([set.id]);
 }
 
 // Frühere gemeinsame Vokabelliste (aus der Zeit vor den Kinder-Listen) zum Übernehmen anbieten.
@@ -347,12 +489,12 @@ function legacyMissing(legacy) {
 async function renderLegacy() {
   const legacy = await (legacyPromise ??= legacyWords().catch(() => []));
   const box = document.getElementById('legacy');
-  if (!box) return;
+  if (!box || !editSet) return;
   const n = legacyMissing(legacy).length;
   box.innerHTML = n
     ? `<div class="panel">
         <h2>Bisherige Vokabelliste</h2>
-        <p class="help">In der bisherigen gemeinsamen Liste ${n === 1 ? 'ist 1 Wort, das' : `sind ${n} Wörter, die`} ${esc(child.name)} noch nicht hat.
+        <p class="help">In der bisherigen gemeinsamen Liste ${n === 1 ? 'ist 1 Wort, das' : `sind ${n} Wörter, die`} in diesem Set noch fehlen.
           Übernommen werden Wörter samt Bildern; die bisherige Liste bleibt erhalten.</p>
         <button class="btn ghost" data-act="import-legacy">${n === 1 ? '1 Wort' : `${n} Wörter`} übernehmen</button>
       </div>`
@@ -361,7 +503,7 @@ async function renderLegacy() {
 
 async function importLegacy() {
   for (const { word, hint, image } of legacyMissing(await legacyPromise)) {
-    const entry = { id: crypto.randomUUID(), child: child.id, word, hint: hint || '', image: image || '' };
+    const entry = { id: crypto.randomUUID(), set: editSet.id, word, hint: hint || '', image: image || '' };
     words.push(entry);
     saveWord(entry).catch(storeError);
   }
@@ -429,7 +571,7 @@ async function addWords() {
   for (const { word, hint } of parseNewWords(input.value)) {
     if (known.has(word.toLowerCase())) continue;
     known.add(word.toLowerCase());
-    const entry = { id: crypto.randomUUID(), child: child.id, word, hint, image: '' };
+    const entry = { id: crypto.randomUUID(), set: editSet.id, word, hint, image: '' };
     words.push(entry);
     saveWord(entry).catch(storeError);
     added.push(entry);
@@ -483,6 +625,7 @@ function setImage(w, image) {
 }
 
 function readSettingsForm() {
+  if (view !== 'app-settings') return;
   const provider = document.getElementById('set-provider').value;
   settings = {
     ...settings,
@@ -508,13 +651,27 @@ app.addEventListener('click', async (e) => {
   switch (el.dataset.act) {
     case 'play': return startGame();
     case 'home': window.speechSynthesis?.cancel(); return renderHome();
-    case 'settings': return askParentGate(renderSettings);
+    case 'settings': return askParentGate(renderChildSettings);
+    case 'app-settings': return askParentGate(renderAppSettings);
+    case 'open-app-settings': return renderAppSettings();
+    case 'child-back': return goHome();
+    case 'app-back': return child ? renderChildSettings() : renderChildren();
+    case 'set-back': return renderAppSettings();
     case 'choose': return chooseChild(el.dataset.id);
     case 'add-child': return askParentGate(askChildName);
     case 'switch': return renderChildren();
+    case 'add-set': return addSet();
+    case 'open-set': return openSet(el.closest('[data-set]').dataset.set);
+    case 'delete-set': {
+      const set = sets.find((s) => s.id === el.closest('[data-set]').dataset.set);
+      if (!set || !confirm(`Set „${set.name}“ mit allen Vokabeln und Bildern wirklich löschen?`)) return;
+      sets = sets.filter((s) => s !== set);
+      renderSetList();
+      return removeSet(set.id).catch(storeError);
+    }
     case 'import-legacy': return importLegacy();
     case 'delete-child': {
-      if (!confirm(`„${child.name}“ mit allen Vokabeln und Bildern wirklich löschen?`)) return;
+      if (!confirm(`„${child.name}“ wirklich löschen?`)) return;
       const id = child.id;
       children = children.filter((c) => c.id !== id);
       renderChildren();
@@ -544,6 +701,13 @@ app.addEventListener('click', async (e) => {
 
 app.addEventListener('change', async (e) => {
   const el = e.target;
+  if (el.dataset.act === 'toggle-set') {
+    const chosen = new Set(childSets());
+    if (el.checked) chosen.add(el.dataset.id);
+    else chosen.delete(el.dataset.id);
+    child.sets = sets.map((s) => s.id).filter((id) => chosen.has(id));
+    return saveChild(child).catch(storeError);
+  }
   if (el.dataset.act === 'upload') {
     const word = words.find((w) => w.id === el.closest('li[data-id]')?.dataset.id);
     const file = el.files[0];
@@ -568,20 +732,24 @@ app.addEventListener('input', (e) => {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // Neue Daten vom Server (auch Änderungen von anderen Geräten).
-function onWords(childId, list) {
-  if (!child || child.id !== childId) return;
-  words = list.map((w) => ({ ...w, child: childId }));
-  if (view === 'home') renderHome();
-  else if (view === 'settings') {
-    renderWordList();
-    renderLegacy();
-  }
-}
-
 function onChildren(list) {
   children = list;
-  if (child && !list.some((c) => c.id === child.id)) return renderChildren(); // auf anderem Gerät gelöscht
-  if (view === 'children') renderChildren();
+  if (view === 'children') return renderChildren();
+  if (!child) return;
+  const current = list.find((c) => c.id === child.id);
+  if (!current) return renderChildren(); // auf anderem Gerät gelöscht
+  const changed = current.sets && JSON.stringify(current.sets) !== JSON.stringify(child.sets);
+  child = { ...current, sets: current.sets || child.sets };
+  if (!changed) return;
+  if (view === 'home') goHome();
+  else if (view === 'child-settings') renderChildSettings();
+}
+
+function onSets(list) {
+  sets = list;
+  if (view === 'app-settings') renderSetList();
+  else if (view === 'child-settings') renderChildSettings();
+  else if (view === 'set' && !list.some((s) => s.id === editSet.id)) renderAppSettings(); // Set woanders gelöscht
 }
 
 function showLoadError(err) {
@@ -594,9 +762,9 @@ function showLoadError(err) {
   }<br><small>${esc(err?.message || err)}</small></p></section>`;
 }
 
-app.innerHTML = '<section class="home"><span class="spinner"></span></section>';
+spinner();
 try {
-  await initStore({ onChildren });
+  await initStore({ onChildren, onSets });
   renderChildren();
 } catch (err) {
   showLoadError(err);

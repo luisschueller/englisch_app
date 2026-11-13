@@ -6,23 +6,26 @@ das Kind tippt aus vier Bildern das richtige an. Die Bilder werden per KI erzeug
 ## Benutzung
 
 - **Kind auswählen:** Beim Start fragt die App „Wer spielt?“. Über „Neues Kind“ (mit Rechenaufgabe
-  für Eltern gesichert) wird ein weiteres Kind angelegt. Jedes Kind hat seine eigene Vokabelliste.
+  für Eltern gesichert) wird ein weiteres Kind angelegt.
+- **Vokabel-Sets (⚙️ auf der Kinderauswahl):** Sets gelten für die ganze App. Dort Sets anlegen und
+  bearbeiten:
+  - Vokabeln eintragen – ein Wort pro Zeile, optional mit Hinweis in Klammern, z. B. `bat (animal)`.
+  - Pro Wort: anhören 🔊, Bild neu erzeugen 🔄, eigenes Foto verwenden 📷, löschen 🗑️.
+  - Auf derselben Seite: „Bild-KI“ (Anbieter OpenAI oder Google Gemini und eigener API-Schlüssel –
+    danach wird für jedes neue Wort automatisch ein Bild erzeugt) sowie Stimme, Sprechtempo und
+    Wörter pro Runde.
+- **Einstellungen des Kindes (⚙️ auf der Startseite des Kindes):** ankreuzen, welche Vokabel-Sets
+  abgefragt werden; Kind löschen.
 - **Spielen:** Auf ▶ tippen. Das Wort wird gesprochen und ausgeschrieben angezeigt, 🔊 wiederholt es.
   Bei einem falschen Bild wird dessen Wort vorgelesen und eingeblendet. Für jedes Wort, das beim
   ersten Versuch richtig ist, gibt es einen Stern.
-- **Einstellungen (⚙️, mit Rechenaufgabe für Eltern gesichert)** – gelten für das ausgewählte Kind:
-  - Vokabeln eintragen – ein Wort pro Zeile, optional mit Hinweis in Klammern, z. B. `bat (animal)`.
-  - Bei „Bild-KI“ Anbieter (OpenAI oder Google Gemini) wählen und den eigenen API-Schlüssel eintragen.
-    Danach wird für jedes neue Wort automatisch ein Bild erzeugt.
-  - Pro Wort: anhören 🔊, Bild neu erzeugen 🔄, eigenes Foto verwenden 📷, löschen 🗑️.
-  - Stimme, Sprechtempo und Wörter pro Runde einstellen.
-  - Kind löschen.
 
-Zum Spielen werden mindestens 4 Wörter mit Bild benötigt.
+Alle Einstellungen sind mit einer Rechenaufgabe für Eltern gesichert.
+Zum Spielen braucht ein Kind Sets mit zusammen mindestens 4 Wörtern mit Bild.
 
 ## Speicherung auf dem Server (Firebase)
 
-Kinder, Vokabeln und Bilder liegen in Google Firebase (Firestore, kostenloser „Spark“-Tarif genügt)
+Kinder, Vokabel-Sets und Bilder liegen in Google Firebase (Firestore, kostenloser „Spark“-Tarif genügt)
 und sind damit auf allen Geräten gleich. Einmalige Einrichtung:
 
 1. Auf <https://console.firebase.google.com> ein Projekt anlegen.
@@ -31,7 +34,7 @@ und sind damit auf allen Geräten gleich. Einmalige Einrichtung:
 4. **Projekteinstellungen → Meine Apps → Web-App (`</>`) registrieren** und die angezeigten
    `firebaseConfig`-Werte in [`js/config.js`](js/config.js) eintragen.
 
-Es gibt keine Anmeldung: Jeder, der die Adresse der App kennt, kann Kinder und Vokabeln sehen,
+Es gibt keine Anmeldung: Jeder, der die Adresse der App kennt, kann Kinder und Vokabel-Sets sehen,
 ändern und löschen. Die Rechenaufgabe schützt nur vor versehentlichen Änderungen durch Kinder.
 
 Auf dem Gerät bleiben: API-Schlüssel der Bild-KI, Stimme/Tempo/Rundenlänge und der Lernstand (✓/✗).
@@ -40,7 +43,7 @@ Auf dem Gerät bleiben: API-Schlüssel der Bild-KI, Stimme/Tempo/Rundenlänge un
 
 Reine Web-App (HTML/CSS/JavaScript, kein Build-Schritt, kein eigener Server):
 
-- Daten liegen in Firestore (`children/{Kind}/words/{Wort}`, Bilder als verkleinerte JPEGs direkt im
+- Daten liegen in Firestore (`sets/{Set}/words/{Wort}` und `children/{Kind}`, Bilder als verkleinerte JPEGs direkt im
   Dokument) und werden auf dem Gerät zwischengespeichert, sodass das Spiel auch ohne Internet läuft.
 - Die Sprachausgabe nutzt die eingebaute englische Stimme des Geräts (Web Speech API).
 - Der API-Schlüssel wird nur auf dem Gerät gespeichert; Bildanfragen gehen direkt vom Gerät an den Anbieter.
