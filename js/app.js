@@ -180,7 +180,10 @@ function nextQuestion() {
         <div class="stars">⭐ ${game.stars}</div>
       </header>
       <div class="game-body">
-        <button class="speak-btn" data-act="repeat" aria-label="Wort noch einmal hören">🔊</button>
+        <div class="prompt">
+          <button class="speak-btn" data-act="repeat" aria-label="Wort noch einmal hören">🔊</button>
+          <div class="prompt-word">${esc(target.word)}</div>
+        </div>
         <div class="cards">${game.options
           .map((w) => `<button class="card" data-act="pick" data-id="${w.id}"><img src="${imageUrl(w)}" alt="" draggable="false"></button>`)
           .join('')}</div>

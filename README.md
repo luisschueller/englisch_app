@@ -7,7 +7,7 @@ das Kind tippt aus vier Bildern das richtige an. Die Bilder werden per KI erzeug
 
 - **Lernen (📖):** Vier Bilder werden gezeigt. Beim Antippen wird das Wort vorgelesen und geschrieben
   eingeblendet. Sind alle vier angetippt, folgen die nächsten vier.
-- **Spielen:** Auf ▶ tippen. Das Wort wird gesprochen, 🔊 wiederholt es. Für jedes Wort,
+- **Spielen:** Auf ▶ tippen. Das Wort wird gesprochen und ausgeschrieben angezeigt, 🔊 wiederholt es. Für jedes Wort,
   das beim ersten Versuch richtig ist, gibt es einen Stern.
 - **Einstellungen (⚙️, mit Rechenaufgabe für Eltern gesichert):**
   - Vokabeln eintragen – ein Wort pro Zeile, optional mit Hinweis in Klammern, z. B. `bat (animal)`.
