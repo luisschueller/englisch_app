@@ -309,3 +309,40 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   .prompt { flex: none; flex-direction: row; max-width: 100%; gap: 4vmin; }
   .prompt-word { text-align: left; min-width: 0; }
 }
+
+/* ---------- Kinderauswahl ---------- */
+
+.kids { display: flex; flex-wrap: wrap; justify-content: center; gap: clamp(16px, 4vmin, 40px); max-width: 1000px; }
+.kid { display: flex; flex-direction: column; align-items: center; gap: 12px; border: 0; background: none; padding: 8px; width: min(30vmin, 190px); }
+.kid:active { transform: scale(.95); }
+.avatar {
+  display: grid;
+  place-items: center;
+  width: min(24vmin, 150px);
+  height: min(24vmin, 150px);
+  border-radius: 50%;
+  color: #fff;
+  font-size: min(12vmin, 76px);
+  font-weight: 800;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .18);
+}
+.avatar.add { background: var(--card); color: var(--muted); font-weight: 400; }
+.kid-name { font-size: 24px; font-weight: 700; max-width: 100%; overflow-wrap: anywhere; }
+.kid-chip {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  max-width: calc(100vw - 120px);
+  height: 64px;
+  padding: 0 24px;
+  border: 0;
+  border-radius: 32px;
+  background: var(--card);
+  font-size: 24px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, .12);
+}
+.btn.danger { background: var(--red); }

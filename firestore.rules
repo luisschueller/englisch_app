@@ -1,11 +1,15 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Kinder und ihre Vokabellisten: ohne Anmeldung les- und änderbar.
+    // Achtung: Jeder, der die Adresse der App kennt, kann damit Daten ändern oder löschen.
+    match /children/{document=**} {
+      allow read, write: if true;
+    }
+    // Frühere gemeinsame Liste: nur noch lesbar, um sie für ein Kind zu übernehmen.
     match /words/{id} {
-      // Jedes Gerät darf die Vokabeln lesen (zum Spielen) ...
       allow read: if true;
-      // ... aber nur der Eltern-Account darf sie ändern. E-Mail-Adresse hier eintragen.
-      allow write: if request.auth != null && request.auth.token.email == "ELTERN-EMAIL-HIER-EINTRAGEN";
+      allow write: if false;
     }
   }
 }

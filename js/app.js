@@ -1,5 +1,5 @@
-import { loadSettings, saveSettings } from './db.js';
-import { remote, initStore, saveWord, removeWord, signIn, signOut } from './store.js';
+import { loadSettings, saveSettings } from './settings.js';
+import { initStore, selectChild, saveChild, removeChild, saveWord, removeWord, legacyWords } from './store.js';
 import { generateImage, shrink, PROVIDERS } from './imagegen.js';
 import { speak, englishVoices, speechSupported, playRight, playWrong } from './speech.js';
 
@@ -9,11 +9,12 @@ const MIN_WORDS = 4;
 let settings = loadSettings();
 let words = [];
 let game = null;
-let user = null; // angemeldeter Elternteil (nur mit Server-Speicher)
-let view = 'home';
+let children = [];
+let child = null; // ausgewähltes Kind; jedes Kind hat seine eigene Vokabelliste
+let view = 'children';
 const runtime = new Map(); // Wort-ID -> { busy, error } (nur Laufzeit, wird nicht gespeichert)
 
-// Lernstand bleibt pro Gerät, damit Kinder-Tablets nichts auf den Server schreiben müssen.
+// Lernstand (✓/✗ je Wort) bleibt auf dem Gerät.
 let stats = {};
 try { stats = JSON.parse(localStorage.getItem('stats') || '{}'); } catch { /* leer starten */ }
 function bumpStat(id, key) {
@@ -38,14 +39,85 @@ function shuffle(list) {
 
 const imageUrl = (w) => w.image || '';
 const rt = (id) => runtime.get(id) || {};
-const canEdit = () => !remote || !!user;
-
+let lastStoreAlert = 0;
 function storeError(err) {
+  // Bei vielen fehlgeschlagenen Schreibvorgängen nur eine Meldung zeigen.
+  if (Date.now() - lastStoreAlert < 5000) return;
+  lastStoreAlert = Date.now();
   alert(`Speichern auf dem Server fehlgeschlagen: ${err.message || err}`);
 }
 
 const playable = () => words.filter((w) => w.image);
 const say = (text) => speak(text, settings);
+
+// ---------- Kinderauswahl ----------
+
+const KID_COLORS = ['#ff8a3d', '#1f9be0', '#35c46a', '#b06be0', '#f0554d', '#e0b020'];
+
+function renderChildren() {
+  game = null;
+  child = null;
+  words = [];
+  view = 'children';
+  app.innerHTML = `
+    <section class="home">
+      <h1>Wer spielt?</h1>
+      <div class="kids">
+        ${children
+          .map(
+            (c, i) => `<button class="kid" data-act="choose" data-id="${c.id}">
+              <span class="avatar" style="background:${KID_COLORS[i % KID_COLORS.length]}">${esc([...c.name][0].toUpperCase())}</span>
+              <span class="kid-name">${esc(c.name)}</span></button>`
+          )
+          .join('')}
+        <button class="kid" data-act="add-child">
+          <span class="avatar add">+</span><span class="kid-name">Neues Kind</span>
+        </button>
+      </div>
+    </section>`;
+}
+
+async function chooseChild(id) {
+  const c = children.find((x) => x.id === id);
+  if (!c) return;
+  child = c;
+  words = [];
+  view = 'home';
+  app.innerHTML = '<section class="home"><span class="spinner"></span></section>';
+  try {
+    await selectChild(c.id, (list) => onWords(c.id, list));
+  } catch (err) {
+    showLoadError(err);
+  }
+}
+
+function askChildName() {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'gate';
+  dlg.innerHTML = `
+    <form method="dialog">
+      <h2>Neues Kind</h2>
+      <p>Wie heißt das Kind?</p>
+      <input name="name" maxlength="30" autocomplete="off" autofocus>
+      <div class="row">
+        <button type="button" class="btn ghost" data-cancel>Abbrechen</button>
+        <button value="ok" type="submit" class="btn">Anlegen</button>
+      </div>
+    </form>`;
+  document.body.append(dlg);
+  dlg.querySelector('[data-cancel]').onclick = () => dlg.close('cancel');
+  dlg.addEventListener('close', () => {
+    const name = dlg.querySelector('input').value.trim();
+    const ok = dlg.returnValue === 'ok' && name;
+    dlg.remove();
+    if (!ok) return;
+    const c = { id: crypto.randomUUID(), name, created: Date.now() };
+    children = [...children, c];
+    saveChild(c).catch(storeError);
+    chooseChild(c.id);
+  });
+  dlg.showModal();
+}
 
 // ---------- Startseite ----------
 
@@ -55,6 +127,7 @@ function renderHome() {
   const ready = playable().length >= MIN_WORDS;
   app.innerHTML = `
     <section class="home">
+      <button class="kid-chip" data-act="switch" aria-label="Kind wechseln">👤 ${esc(child.name)}</button>
       <button class="icon-btn corner" data-act="settings" aria-label="Einstellungen">⚙️</button>
       <h1>Englisch lernen</h1>
       ${
@@ -157,7 +230,7 @@ function renderResult() {
 
 // ---------- Elternsperre ----------
 
-function askParentGate() {
+function askParentGate(onOk) {
   const a = 3 + Math.floor(Math.random() * 7);
   const b = 3 + Math.floor(Math.random() * 7);
   const dlg = document.createElement('dialog');
@@ -177,7 +250,7 @@ function askParentGate() {
   dlg.addEventListener('close', () => {
     const ok = dlg.returnValue === 'ok' && Number(dlg.querySelector('input').value) === a * b;
     dlg.remove();
-    if (ok) renderSettings();
+    if (ok) onOk();
   });
   dlg.showModal();
 }
@@ -192,10 +265,10 @@ function renderSettings() {
     <section class="settings">
       <header class="settings-bar">
         <button class="btn ghost" data-act="home">← Zurück</button>
-        <h1>Einstellungen</h1>
+        <h1>Einstellungen – ${esc(child.name)}</h1>
       </header>
 
-      ${canEdit() ? editPanels() : loginPanel()}
+      ${editPanels()}
 
       <div class="panel">
         <h2>Sprache &amp; Spiel</h2>
@@ -215,20 +288,15 @@ function renderSettings() {
         </label>
         <button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button>
       </div>
+
+      <div class="panel">
+        <h2>Kind</h2>
+        <p class="help">Löscht „${esc(child.name)}“ mitsamt der Vokabelliste und allen Bildern – auf allen Geräten.</p>
+        <button class="btn danger" data-act="delete-child">Kind löschen</button>
+      </div>
     </section>`;
   renderWordList();
-}
-
-function loginPanel() {
-  return `
-      <form class="panel" id="login-form">
-        <h2>Anmeldung</h2>
-        <p class="help">Die Vokabeln liegen auf dem Server. Zum Bearbeiten bitte mit dem Eltern-Konto anmelden.</p>
-        <label>E-Mail <input id="login-email" type="email" autocomplete="username" required></label>
-        <label>Passwort <input id="login-password" type="password" autocomplete="current-password" required></label>
-        <p class="error" id="login-error"></p>
-        <button class="btn" type="submit">Anmelden</button>
-      </form>`;
+  renderLegacy();
 }
 
 function editPanels() {
@@ -243,11 +311,13 @@ function editPanels() {
 
       <div class="panel">
         <div class="panel-head">
-          <h2>Meine Vokabeln <span id="word-count" class="count"></span></h2>
+          <h2>Vokabeln von ${esc(child.name)} <span id="word-count" class="count"></span></h2>
           <button class="btn ghost" data-act="gen-missing">Fehlende Bilder erzeugen</button>
         </div>
         <ul id="word-list" class="word-list"></ul>
       </div>
+
+      <div id="legacy"></div>
 
       <div class="panel">
         <h2>Bild-KI</h2>
@@ -263,12 +333,40 @@ function editPanels() {
           <input id="set-model" value="${esc(settings.model)}" autocomplete="off" autocapitalize="off" placeholder="${esc(PROVIDERS[settings.provider].defaultModel)}">
         </label>
       </div>
-      ${
-        remote
-          ? `<div class="panel"><p class="help">Angemeldet als ${esc(user.email)}. Vokabeln und Bilder werden auf dem Server gespeichert und erscheinen auf allen Geräten.</p>
-             <button class="btn ghost" data-act="logout">Abmelden</button></div>`
-          : `<div class="panel"><p class="help">Es ist noch kein Server eingerichtet – Vokabeln und Bilder werden nur auf diesem Gerät gespeichert.</p></div>`
-      }`;
+`;
+}
+
+// Frühere gemeinsame Vokabelliste (aus der Zeit vor den Kinder-Listen) zum Übernehmen anbieten.
+let legacyPromise;
+
+function legacyMissing(legacy) {
+  const known = new Set(words.map((w) => w.word.toLowerCase()));
+  return legacy.filter((w) => w.word && !known.has(w.word.toLowerCase()));
+}
+
+async function renderLegacy() {
+  const legacy = await (legacyPromise ??= legacyWords().catch(() => []));
+  const box = document.getElementById('legacy');
+  if (!box) return;
+  const n = legacyMissing(legacy).length;
+  box.innerHTML = n
+    ? `<div class="panel">
+        <h2>Bisherige Vokabelliste</h2>
+        <p class="help">In der bisherigen gemeinsamen Liste ${n === 1 ? 'ist 1 Wort, das' : `sind ${n} Wörter, die`} ${esc(child.name)} noch nicht hat.
+          Übernommen werden Wörter samt Bildern; die bisherige Liste bleibt erhalten.</p>
+        <button class="btn ghost" data-act="import-legacy">${n === 1 ? '1 Wort' : `${n} Wörter`} übernehmen</button>
+      </div>`
+    : '';
+}
+
+async function importLegacy() {
+  for (const { word, hint, image } of legacyMissing(await legacyPromise)) {
+    const entry = { id: crypto.randomUUID(), child: child.id, word, hint: hint || '', image: image || '' };
+    words.push(entry);
+    saveWord(entry).catch(storeError);
+  }
+  renderWordList();
+  renderLegacy();
 }
 
 function renderWordList() {
@@ -331,7 +429,7 @@ async function addWords() {
   for (const { word, hint } of parseNewWords(input.value)) {
     if (known.has(word.toLowerCase())) continue;
     known.add(word.toLowerCase());
-    const entry = { id: crypto.randomUUID(), word, hint, image: '' };
+    const entry = { id: crypto.randomUUID(), child: child.id, word, hint, image: '' };
     words.push(entry);
     saveWord(entry).catch(storeError);
     added.push(entry);
@@ -410,7 +508,18 @@ app.addEventListener('click', async (e) => {
   switch (el.dataset.act) {
     case 'play': return startGame();
     case 'home': window.speechSynthesis?.cancel(); return renderHome();
-    case 'settings': return askParentGate();
+    case 'settings': return askParentGate(renderSettings);
+    case 'choose': return chooseChild(el.dataset.id);
+    case 'add-child': return askParentGate(askChildName);
+    case 'switch': return renderChildren();
+    case 'import-legacy': return importLegacy();
+    case 'delete-child': {
+      if (!confirm(`„${child.name}“ mit allen Vokabeln und Bildern wirklich löschen?`)) return;
+      const id = child.id;
+      children = children.filter((c) => c.id !== id);
+      renderChildren();
+      return removeChild(id).catch(storeError);
+    }
     case 'repeat': return game && say(game.target.word);
     case 'pick': return pick(el);
     case 'add': return addWords();
@@ -427,9 +536,9 @@ app.addEventListener('click', async (e) => {
       words = words.filter((w) => w !== word);
       runtime.delete(word.id);
       deleted.add(word.id);
-      removeWord(word.id).catch(storeError);
-      return renderWordList();
-    case 'logout': return signOut();
+      removeWord(word).catch(storeError);
+      renderWordList();
+      return renderLegacy();
   }
 });
 
@@ -458,34 +567,37 @@ app.addEventListener('input', (e) => {
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
-app.addEventListener('submit', async (e) => {
-  if (e.target.id !== 'login-form') return;
-  e.preventDefault();
-  const error = document.getElementById('login-error');
-  error.textContent = '';
-  try {
-    await signIn(document.getElementById('login-email').value.trim(), document.getElementById('login-password').value);
-  } catch {
-    error.textContent = 'Anmeldung fehlgeschlagen. Bitte E-Mail und Passwort prüfen.';
-  }
-});
-
-// Neue Daten vom Speicher (bei Server-Speicher auch Änderungen von anderen Geräten).
-function onWords(list) {
-  words = list;
+// Neue Daten vom Server (auch Änderungen von anderen Geräten).
+function onWords(childId, list) {
+  if (!child || child.id !== childId) return;
+  words = list.map((w) => ({ ...w, child: childId }));
   if (view === 'home') renderHome();
-  else if (view === 'settings') renderWordList();
+  else if (view === 'settings') {
+    renderWordList();
+    renderLegacy();
+  }
 }
 
-function onAuth(u) {
-  user = u;
-  if (view === 'settings') renderSettings();
+function onChildren(list) {
+  children = list;
+  if (child && !list.some((c) => c.id === child.id)) return renderChildren(); // auf anderem Gerät gelöscht
+  if (view === 'children') renderChildren();
+}
+
+function showLoadError(err) {
+  view = 'error';
+  const denied = err?.code === 'permission-denied';
+  app.innerHTML = `<section class="home"><p class="notice">${
+    denied
+      ? 'Der Server verweigert den Zugriff. Bitte in der Firebase-Konsole die Firestore-Regeln aus der Datei firestore.rules eintragen.'
+      : 'Die Daten konnten nicht geladen werden. Bitte Internetverbindung prüfen und neu laden.'
+  }<br><small>${esc(err?.message || err)}</small></p></section>`;
 }
 
 app.innerHTML = '<section class="home"><span class="spinner"></span></section>';
 try {
-  await initStore({ onWords, onAuth });
-  if (view === 'home') renderHome();
+  await initStore({ onChildren });
+  renderChildren();
 } catch (err) {
-  app.innerHTML = `<section class="home"><p class="notice">Die Vokabeln konnten nicht geladen werden. Bitte Internetverbindung prüfen und neu laden.<br><small>${esc(err.message || err)}</small></p></section>`;
+  showLoadError(err);
 }
