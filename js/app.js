@@ -185,7 +185,7 @@ function nextQuestion() {
           <div class="prompt-word">${esc(target.word)}</div>
         </div>
         <div class="cards">${game.options
-          .map((w) => `<button class="card" data-act="pick" data-id="${w.id}"><img src="${imageUrl(w)}" alt="" draggable="false"></button>`)
+          .map((w) => `<button class="card" data-act="pick" data-id="${w.id}"><img src="${imageUrl(w)}" alt="" draggable="false"><span class="caption">${esc(w.word)}</span></button>`)
           .join('')}</div>
       </div>
     </section>`;
@@ -217,7 +217,11 @@ function pick(btn) {
       game.firstTry = false;
       bumpStat(target.id, 'wrong');
     }
-    setTimeout(() => game && !game.locked && say(target.word), 600);
+    // Das angetippte (falsche) Wort vorlesen und einblenden, danach das gesuchte Wort wiederholen.
+    const picked = game.options.find((w) => w.id === btn.dataset.id);
+    say(picked.word);
+    clearTimeout(game.repeatTimer);
+    game.repeatTimer = setTimeout(() => game && game.target === target && !game.locked && say(target.word), 1800);
   }
 }
 
