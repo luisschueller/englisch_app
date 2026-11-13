@@ -51,7 +51,6 @@ const say = (text) => speak(text, settings);
 
 function renderHome() {
   game = null;
-  stopLearn();
   view = 'home';
   const ready = playable().length >= MIN_WORDS;
   app.innerHTML = `
@@ -60,102 +59,16 @@ function renderHome() {
       <h1>Englisch lernen</h1>
       ${
         ready
-          ? `<div class="row modes">
-               <div class="mode"><button class="play-btn learn" data-act="learn" aria-label="Lernen">📖</button><span>Lernen</span></div>
-               <div class="mode"><button class="play-btn" data-act="play" aria-label="Spielen">▶</button><span>Spielen</span></div>
-             </div>`
+          ? `<button class="play-btn" data-act="play" aria-label="Spiel starten">▶</button>`
           : `<p class="notice">Bitte zuerst in den Einstellungen (⚙️) mindestens ${MIN_WORDS} Wörter mit Bildern anlegen.</p>`
       }
       ${speechSupported() ? '' : '<p class="notice">Dieser Browser unterstützt leider keine Sprachausgabe.</p>'}
     </section>`;
 }
 
-// ---------- Lernmodus ----------
-// Vier Bilder; Antippen liest das Wort vor und blendet es ein. Sind alle vier angetippt, kommen die nächsten.
-
-let learn = null;
-const LEARN_PAUSE = 2500; // Zeit zum Zuhören/Lesen, bevor die nächsten Bilder kommen
-
-function stopLearn() {
-  if (learn) clearTimeout(learn.timer);
-  learn = null;
-}
-
-function startLearn() {
-  const pool = shuffle(playable());
-  if (pool.length < MIN_WORDS) return;
-  const groups = [];
-  for (let i = 0; i < pool.length; i += MIN_WORDS) {
-    // Letzte Gruppe mit bereits gezeigten Wörtern auffüllen, damit immer vier Bilder zu sehen sind.
-    groups.push(i + MIN_WORDS <= pool.length ? pool.slice(i, i + MIN_WORDS) : pool.slice(-MIN_WORDS));
-  }
-  game = null;
-  stopLearn();
-  view = 'learn';
-  learn = { groups, index: 0, seen: new Set(), timer: 0 };
-  renderLearn();
-}
-
-function renderLearn() {
-  learn.seen = new Set();
-  app.innerHTML = `
-    <section class="game">
-      <header class="game-bar">
-        <button class="icon-btn" data-act="home" aria-label="Beenden">✖</button>
-        <div class="dots">${learn.groups
-          .map((_, i) => `<span class="dot ${i < learn.index ? 'done' : i === learn.index ? 'now' : ''}"></span>`)
-          .join('')}</div>
-        <div class="stars"></div>
-      </header>
-      <div class="game-body">
-        <div class="cards learn">${learn.groups[learn.index]
-          .map(
-            (w) => `<button class="card" data-act="learn-pick" data-id="${w.id}">
-              <img src="${imageUrl(w)}" alt="" draggable="false"><span class="caption">${esc(w.word)}</span></button>`
-          )
-          .join('')}</div>
-      </div>
-    </section>`;
-}
-
-function learnPick(btn) {
-  if (!learn) return;
-  const group = learn.groups[learn.index];
-  const word = group.find((w) => w.id === btn.dataset.id);
-  if (!word) return;
-  say(word.word);
-  btn.classList.add('seen');
-  // Animation bei jedem Antippen neu starten
-  btn.classList.remove('tapped');
-  void btn.offsetWidth;
-  btn.classList.add('tapped');
-  learn.seen.add(word.id);
-  clearTimeout(learn.timer);
-  if (learn.seen.size < group.length) return;
-  // Alle angetippt: kurz warten (erneutes Antippen verlängert die Pause), dann weiter.
-  learn.timer = setTimeout(() => {
-    if (!learn) return;
-    learn.index++;
-    if (learn.index < learn.groups.length) return renderLearn();
-    stopLearn();
-    view = 'result';
-    app.innerHTML = `
-      <section class="home">
-        <h1>Super! 🎉</h1>
-        <div class="row modes">
-          <div class="mode"><button class="play-btn learn" data-act="learn" aria-label="Noch einmal lernen">📖</button><span>Lernen</span></div>
-          <div class="mode"><button class="play-btn" data-act="play" aria-label="Spielen">▶</button><span>Spielen</span></div>
-          <button class="icon-btn big" data-act="home" aria-label="Startseite">🏠</button>
-        </div>
-      </section>`;
-    playRight();
-  }, LEARN_PAUSE);
-}
-
 // ---------- Spiel ----------
 
 function startGame() {
-  stopLearn();
   const pool = playable();
   if (pool.length < MIN_WORDS) return;
   view = 'game';
@@ -273,7 +186,6 @@ function askParentGate() {
 
 function renderSettings() {
   game = null;
-  stopLearn();
   view = 'settings';
   const voices = englishVoices();
   app.innerHTML = `
@@ -497,8 +409,6 @@ app.addEventListener('click', async (e) => {
   const word = row && words.find((w) => w.id === row.dataset.id);
   switch (el.dataset.act) {
     case 'play': return startGame();
-    case 'learn': return startLearn();
-    case 'learn-pick': return learnPick(el);
     case 'home': window.speechSynthesis?.cancel(); return renderHome();
     case 'settings': return askParentGate();
     case 'repeat': return game && say(game.target.word);

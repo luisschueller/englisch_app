@@ -271,17 +271,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   .word-actions { width: 100%; justify-content: flex-end; }
 }
 
-/* ---------- Modus-Auswahl & Lernmodus ---------- */
+/* ---------- Wort unter dem Bild ---------- */
 
-.modes { gap: clamp(24px, 6vw, 72px); flex-wrap: wrap; }
-.mode { display: flex; flex-direction: column; align-items: center; gap: 22px; font-size: 28px; font-weight: 700; color: var(--blue-dark); }
-.play-btn.learn { background: var(--blue); box-shadow: 0 12px 0 var(--blue-dark), 0 20px 30px rgba(0, 0, 0, .18); padding-left: 0; font-size: min(16vmin, 110px); }
-.play-btn.learn:active { box-shadow: 0 4px 0 var(--blue-dark); }
-
-.cards.learn { --size: min(100dvh - 120px, 100vw - 32px); }
 .cards .card { position: relative; }
-.card.seen { border-color: var(--green); }
-.card.tapped { animation: pop .4s; }
 .caption {
   position: absolute;
   left: 0;
@@ -298,7 +290,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   transform: translateY(100%);
   transition: transform .25s;
 }
-.card.seen .caption, .card.wrong .caption, .card.right .caption { transform: none; }
+.card.wrong .caption, .card.right .caption { transform: none; }
 
 /* ---------- Spielmodus: gesprochenes Wort ausgeschrieben ---------- */
 
