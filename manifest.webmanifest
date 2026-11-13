@@ -1,0 +1,10 @@
+{
+  "name": "Englisch lernen",
+  "short_name": "Englisch",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#e8f7ff",
+  "theme_color": "#4cc2ff",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
